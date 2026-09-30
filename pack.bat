@@ -1,7 +1,7 @@
 set "projectName=Subtitle Mask"
 set "versionNumber=1.3.0"
 
-pyinstaller -w -D --name "%projectName%" main.py
+pyinstaller --clean --noupx -w -D --name "%projectName%" main.py
 
 set "sourceFolder=./dist/%projectName%"
 set "zipFile=./dist/%projectName%-%versionNumber%.zip"
