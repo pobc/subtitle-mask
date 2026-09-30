@@ -98,13 +98,18 @@ class FloatingWindow:
         self.toggle_key_btn.pack(side='left')
         tk.Label(self.hint_frame, text="to hide / show.").pack(side='left')
 
-        self.need_blur_cb_var = tk.BooleanVar(value=self.config.window_data.need_blur)
-        self.need_blur_cb = tk.Checkbutton(
+        self.need_blur = self.config.window_data.need_blur
+        self.blur_toggle = tk.Canvas(
             top_level,
-            text="Blur mask",
-            variable=self.need_blur_cb_var,
-            command=self.on_need_blur_changed,
+            width=28,
+            height=28,
+            highlightthickness=0,
+            borderwidth=0,
+            cursor='hand2',
         )
+        self.blur_toggle.bind('<Button-1>', self.toggle_blur)
+        self.blur_toggle.bind('<B1-Motion>', lambda event: 'break')
+        self.blur_toggle.bind('<ButtonRelease-1>', lambda event: 'break')
 
         self.refresh_colors()
         self.blur()
@@ -224,12 +229,25 @@ class FloatingWindow:
         if event.name == KeyboardHelper.normalize_key_name(self.hold_to_hide_hotkey):
             self.show()
 
-    def on_need_blur_changed(self):
-        self.config.save_need_blur(self.need_blur_cb_var.get())
+    def toggle_blur(self, _=None):
+        self.need_blur = not self.need_blur
+        self.config.save_need_blur(self.need_blur)
+        self.refresh_blur_toggle()
         if self._hints_visible:
             self.no_blur()
         else:
             self.blur()
+        return 'break'
+
+    def refresh_blur_toggle(self):
+        self.blur_toggle.delete('all')
+        red, green, blue = self.top_level.winfo_rgb(self.mask_color)
+        brightness = (red * 299 + green * 587 + blue * 114) / 1000 / 65535
+        outline = '#202124' if brightness > 0.55 else '#ffffff'
+
+        self.blur_toggle.create_oval(3, 3, 25, 25, outline=outline, width=2)
+        if self.need_blur:
+            self.blur_toggle.create_oval(8, 8, 20, 20, fill=outline, outline=outline)
 
     def set_mask_color(self, color):
         if self.hotkey_to_set:
@@ -267,6 +285,7 @@ class FloatingWindow:
                 'selection', outline=foreground,
                 state='normal' if color == self.mask_color else 'hidden',
             )
+        self.refresh_blur_toggle()
 
     def start_hotkey_setup(self, hotkey_type):
         if self.hotkey_to_set:
@@ -345,7 +364,7 @@ class FloatingWindow:
         self.header_frame.pack(side='top', fill='x')
         self.grip.place(relx=1, rely=1, anchor='se')
         self.hint_frame.pack(anchor="center")
-        self.need_blur_cb.pack(anchor="center")
+        self.blur_toggle.pack(anchor="center")
         self.no_blur()
 
     def hide_hints(self):
@@ -355,11 +374,11 @@ class FloatingWindow:
         self.header_frame.pack_forget()
         self.grip.place_forget()
         self.hint_frame.pack_forget()
-        self.need_blur_cb.pack_forget()
+        self.blur_toggle.pack_forget()
         self.blur()
 
     def blur(self):
-        if self.need_blur_cb_var.get():
+        if self.need_blur:
             blur_top_level(self.top_level)
             self._blur_active = True
         else:
