@@ -9,7 +9,7 @@ class WindowData:
         self.y = 0
         self.width = 800
         self.height = 100
-        self.need_blur = True
+        self.need_blur = False
         self.mask_color = '#f0f0f0'
         self.hotkeys = {
             'toggle': '-',
