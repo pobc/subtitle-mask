@@ -110,6 +110,7 @@ class FloatingWindow:
         self.blur()
 
         self.top_level.after(100, self.monitor_pointer)
+        self.top_level.after(300, self.refresh_topmost)
 
     def dragging(self, event):
         if self._drag_origin is None:
@@ -373,6 +374,11 @@ class FloatingWindow:
             self._blur_active = False
         if str(self.top_level.wm_attributes('-transparentcolor')):
             self.top_level.wm_attributes('-transparentcolor', '')
+
+    def refresh_topmost(self):
+        self.top_level.lift()
+        self.top_level.attributes('-topmost', True)
+        self.top_level.after(300, self.refresh_topmost)
 
 
 class RootWindow:
