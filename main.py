@@ -1,13 +1,21 @@
 import tkinter as tk
 from tkinter import ttk
 
+import win32con
+import win32gui
 
-from helper.blur_helper import blur_top_level
+
+from helper.blur_helper import blur_top_level, clear_blur_top_level
 from helper.keyboard_helper import KeyboardHelper
 from helper.local_config import LocalConfig
 
 
 class FloatingWindow:
+    MASK_COLORS = (
+        '#f0f0f0', '#202124', '#64748b', '#ef4444',
+        '#f59e0b', '#22c55e', '#3b82f6',
+    )
+
     def __init__(self, master):
         self.master = master
         self.top_level = top_level = tk.Toplevel(master)
@@ -20,14 +28,17 @@ class FloatingWindow:
         self.active_hotkey_btn = None
         self.original_btn_text = None
 
-        self.default_color = self.top_level.cget('background')
+        saved_color = self.config.window_data.mask_color
+        self.mask_color = saved_color if saved_color in self.MASK_COLORS else self.MASK_COLORS[0]
         self._pointer_monitor_enabled = True
         self._pointer_inside = None
+        self._hints_visible = False
+        self._blur_active = False
 
         top_level.wm_attributes("-topmost", 1)
         top_level.overrideredirect(True)
         top_level.wm_geometry(self.config.get_geo_str())
-        top_level.minsize(100, 30)
+        top_level.minsize(220, 30)
 
         top_level.bind('<B1-Motion>', self.dragging)
         top_level.bind('<Button-1>', self.on_mouse_down)
@@ -39,12 +50,32 @@ class FloatingWindow:
         self.keyboard_helper.register_key_release(self.on_key_release)
         self.refresh_hotkey_watch()
 
-        self.grip = ttk.Sizegrip(self.top_level)
+        self.grip = ttk.Sizegrip(self.top_level, style='Mask.TSizegrip')
 
-        self.lastClickX = 0
-        self.lastClickY = 0
+        self._drag_origin = None
+        self._last_drag_position = None
 
-        self.close_button = tk.Button(top_level, text="×", command=self.terminate, borderwidth=0)
+        self.header_frame = tk.Frame(top_level)
+        self.close_button = tk.Button(
+            self.header_frame, text="×", command=self.terminate, borderwidth=0,
+        )
+        self.close_button.pack(side='right', padx=4)
+        self.color_frame = tk.Frame(self.header_frame)
+        self.color_frame.pack(side='left', padx=6, pady=2)
+        self.color_swatches = {}
+        for color in self.MASK_COLORS:
+            swatch = tk.Canvas(
+                self.color_frame, width=24, height=24,
+                highlightthickness=0, borderwidth=0, cursor='hand2',
+            )
+            swatch.pack(side='left', padx=1)
+            swatch.create_oval(1, 1, 23, 23, width=2, tags='selection')
+            swatch.create_oval(5, 5, 19, 19, fill=color, outline='#a1a1aa')
+            swatch.bind('<Button-1>', lambda event, value=color: self.set_mask_color(value))
+            # Color clicks must not start the window's drag gesture.
+            swatch.bind('<B1-Motion>', lambda event: 'break')
+            swatch.bind('<ButtonRelease-1>', lambda event: 'break')
+            self.color_swatches[color] = swatch
 
         self.hint_frame = tk.Frame(top_level)
         tk.Label(self.hint_frame, text="Hold").pack(side='left')
@@ -75,28 +106,48 @@ class FloatingWindow:
             command=self.on_need_blur_changed,
         )
 
-        if self.config.first_open:
-            self.show_hints(init=True)
-        else:
-            self.blur()
+        self.refresh_colors()
+        self.blur()
 
         self.top_level.after(100, self.monitor_pointer)
 
     def dragging(self, event):
-        top_level = self.top_level
-        x = event.x - self.lastClickX + top_level.winfo_x()
-        y = event.y - self.lastClickY + top_level.winfo_y()
-        top_level.geometry("+%s+%s" % (x, y))
+        if self._drag_origin is None:
+            return
+
+        pointer_x, pointer_y, window_x, window_y = self._drag_origin
+        x = window_x + event.x_root - pointer_x
+        y = window_y + event.y_root - pointer_y
+        if (x, y) == self._last_drag_position:
+            return
+
+        # Tk's geometry path also refreshes the native frame on every move.
+        # Move only the existing window, keeping its size and rendering state.
+        hwnd = win32gui.GetParent(self.top_level.winfo_id())
+        win32gui.SetWindowPos(
+            hwnd, 0, x, y, 0, 0,
+            win32con.SWP_NOSIZE | win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE,
+        )
+        self._last_drag_position = (x, y)
 
     def on_mouse_down(self, event):
+        if isinstance(event.widget, (tk.Button, tk.Checkbutton, ttk.Sizegrip)):
+            return
         if self.hotkey_to_set:
             self.cancel_hotkey_setup()
 
-        self.lastClickX = event.x
-        self.lastClickY = event.y
+        self._drag_origin = (
+            event.x_root, event.y_root,
+            self.top_level.winfo_x(), self.top_level.winfo_y(),
+        )
+        self._last_drag_position = self._drag_origin[2:]
         self._pointer_monitor_enabled = False
+        self._pointer_inside = True
+        self.show_hints()
 
     def on_mouse_release(self, _):
+        self._drag_origin = None
+        self._last_drag_position = None
         geo_obj = {
             'x': self.top_level.winfo_x(),
             'y': self.top_level.winfo_y(),
@@ -124,9 +175,7 @@ class FloatingWindow:
         if self._pointer_monitor_enabled:
             is_inside = self._is_pointer_inside()
 
-            if self._pointer_inside is None:
-                self._pointer_inside = is_inside
-            elif is_inside != self._pointer_inside:
+            if is_inside != self._pointer_inside:
                 self._pointer_inside = is_inside
                 if is_inside:
                     self.show_hints()
@@ -176,6 +225,47 @@ class FloatingWindow:
 
     def on_need_blur_changed(self):
         self.config.save_need_blur(self.need_blur_cb_var.get())
+        if self._hints_visible:
+            self.no_blur()
+        else:
+            self.blur()
+
+    def set_mask_color(self, color):
+        if self.hotkey_to_set:
+            self.cancel_hotkey_setup()
+        self.mask_color = color
+        self.config.save_mask_color(color)
+        self.refresh_colors()
+        if self._hints_visible:
+            self.no_blur()
+        else:
+            self.blur()
+        return 'break'
+
+    def refresh_colors(self):
+        red, green, blue = self.top_level.winfo_rgb(self.mask_color)
+        brightness = (red * 299 + green * 587 + blue * 114) / 1000 / 65535
+        foreground = '#202124' if brightness > 0.55 else '#ffffff'
+
+        def update_widget(widget):
+            if isinstance(widget, (tk.Frame, tk.Label, tk.Button, tk.Checkbutton, tk.Canvas)):
+                widget.configure(bg=self.mask_color)
+            if isinstance(widget, (tk.Label, tk.Button, tk.Checkbutton)):
+                widget.configure(fg=foreground)
+            if isinstance(widget, (tk.Button, tk.Checkbutton)):
+                widget.configure(activebackground=self.mask_color, activeforeground=foreground)
+            if isinstance(widget, tk.Checkbutton):
+                widget.configure(selectcolor=self.mask_color)
+            for child in widget.winfo_children():
+                update_widget(child)
+
+        update_widget(self.top_level)
+        ttk.Style(self.top_level).configure('Mask.TSizegrip', background=self.mask_color)
+        for color, swatch in self.color_swatches.items():
+            swatch.itemconfigure(
+                'selection', outline=foreground,
+                state='normal' if color == self.mask_color else 'hidden',
+            )
 
     def start_hotkey_setup(self, hotkey_type):
         if self.hotkey_to_set:
@@ -247,17 +337,22 @@ class FloatingWindow:
         self.keyboard_helper.stop()
         self.master.destroy()
 
-    def show_hints(self, init=False):
-        self.close_button.pack(side="top", anchor="ne")
-        self.grip.pack(side="bottom", anchor="se")
+    def show_hints(self):
+        if self._hints_visible:
+            return
+        self._hints_visible = True
+        self.header_frame.pack(side='top', fill='x')
+        self.grip.place(relx=1, rely=1, anchor='se')
         self.hint_frame.pack(anchor="center")
         self.need_blur_cb.pack(anchor="center")
-        if not init:
-            self.no_blur()
+        self.no_blur()
 
     def hide_hints(self):
-        self.close_button.pack_forget()
-        self.grip.pack_forget()
+        if not self._hints_visible:
+            return
+        self._hints_visible = False
+        self.header_frame.pack_forget()
+        self.grip.place_forget()
         self.hint_frame.pack_forget()
         self.need_blur_cb.pack_forget()
         self.blur()
@@ -265,9 +360,19 @@ class FloatingWindow:
     def blur(self):
         if self.need_blur_cb_var.get():
             blur_top_level(self.top_level)
+            self._blur_active = True
+        else:
+            self.no_blur()
 
     def no_blur(self):
-        self.top_level.config(bg=self.default_color)
+        self.top_level.config(bg=self.mask_color)
+        if self._blur_active:
+            # Paint a solid background before removing the native effect.
+            self.top_level.update_idletasks()
+            clear_blur_top_level(self.top_level)
+            self._blur_active = False
+        if str(self.top_level.wm_attributes('-transparentcolor')):
+            self.top_level.wm_attributes('-transparentcolor', '')
 
 
 class RootWindow:
@@ -281,5 +386,6 @@ class RootWindow:
         self.root.mainloop()
 
 
-app = RootWindow()
-app.run()
+if __name__ == '__main__':
+    app = RootWindow()
+    app.run()

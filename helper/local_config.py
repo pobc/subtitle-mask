@@ -10,6 +10,7 @@ class WindowData:
         self.width = 800
         self.height = 100
         self.need_blur = True
+        self.mask_color = '#f0f0f0'
         self.hotkeys = {
             'toggle': '-',
             'hold_to_hide': 'ctrl'
@@ -24,6 +25,7 @@ class WindowData:
                 self.width = raw_window_data['width']
                 self.height = raw_window_data['height']
                 self.need_blur = raw_window_data['need_blur']
+                self.mask_color = raw_window_data.get('mask_color', self.mask_color)
                 if 'hotkeys' in raw_window_data:
                     self.hotkeys.update(raw_window_data['hotkeys'])
                 print(raw_window_data)
@@ -52,6 +54,10 @@ class LocalConfig:
 
     def save_need_blur(self, need_blur):
         self.window_data.need_blur = need_blur
+        self.window_data.save()
+
+    def save_mask_color(self, color):
+        self.window_data.mask_color = color
         self.window_data.save()
 
     def save_hotkey(self, key_type, key_name):
